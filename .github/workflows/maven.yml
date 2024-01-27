@@ -92,7 +92,7 @@ jobs:
         benchmark: [ 'epinions', 'hyadapt', 'noop', 'otmetrics', 'resourcestresser', 'seats', 'sibench', 'smallbank', 'tatp', 'tpcc', 'twitter', 'voter', 'wikipedia', 'ycsb' ]
     steps:
       - name: Download artifact
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: benchbase-sqlite
 
@@ -152,7 +152,7 @@ jobs:
           - 3306:3306
     steps:
       - name: Download artifact
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: benchbase-mariadb
 
@@ -211,7 +211,7 @@ jobs:
           - 3306:3306
     steps:
       - name: Download artifact
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: benchbase-mysql
 
@@ -269,7 +269,7 @@ jobs:
           - 5432:5432
     steps:
       - name: Download artifact
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: benchbase-postgres
 
@@ -320,7 +320,7 @@ jobs:
           - 26257:26257
     steps:
       - name: Download artifact
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: benchbase-cockroachdb
 
@@ -377,7 +377,7 @@ jobs:
           - 1433:1433
     steps:
       - name: Download artifact
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: benchbase-sqlserver
 
