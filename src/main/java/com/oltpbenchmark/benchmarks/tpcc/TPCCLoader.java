@@ -24,11 +24,22 @@ import com.oltpbenchmark.benchmarks.tpcc.pojo.*;
 import com.oltpbenchmark.catalog.Table;
 import com.oltpbenchmark.util.SQLUtil;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.PipedInputStream;
+import java.io.PipedOutputStream;
+import java.io.PrintWriter;
+import java.nio.charset.StandardCharsets;
+
 import java.sql.*;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.CountDownLatch;
+
+import org.postgresql.core.BaseConnection;
+import org.postgresql.copy.CopyManager;
 
 /**
  * TPC-C Benchmark Loader
@@ -282,71 +293,88 @@ public class TPCCLoader extends Loader<TPCCBenchmark> {
     }
 
     protected void loadStock(Connection conn, int start_id, int last_id, int numItems) {
+        final String header = "s_w_id,s_i_id,s_quantity,s_ytd,s_order_cnt,s_remote_cnt,s_data,s_dist_01,s_dist_02," +
+            "s_dist_03,s_dist_04,s_dist_05,s_dist_06,s_dist_07,s_dist_08,s_dist_09,s_dist_10\n";
 
-        try (PreparedStatement stockPreparedStatement = getInsertStatement(conn, TPCCConstants.TABLENAME_STOCK)) {
-            int batchSize = 0;
-            for (int w_id = start_id; w_id <= last_id; ++w_id) {
-                for (int i = 1; i <= numItems; i++) {
-                    Stock stock = new Stock();
-                    stock.s_i_id = i;
-                    stock.s_w_id = w_id;
-                    stock.s_quantity = TPCCUtil.randomNumber(10, 100, benchmark.rng());
-                    stock.s_ytd = 0;
-                    stock.s_order_cnt = 0;
-                    stock.s_remote_cnt = 0;
+        try {
+            PipedOutputStream outStream = new PipedOutputStream();
+            PipedInputStream inStream = new PipedInputStream(outStream);
 
-                    // s_data
-                    int randPct = TPCCUtil.randomNumber(1, 100, benchmark.rng());
-                    int len = TPCCUtil.randomNumber(26, 50, benchmark.rng());
-                    if (randPct > 10) {
-                        // 90% of time i_data isa random string of length [26 ..
-                        // 50]
-                        stock.s_data = TPCCUtil.randomStr(len);
-                    } else {
-                        // 10% of time i_data has "ORIGINAL" crammed somewhere
-                        // in middle
-                        int startORIGINAL = TPCCUtil.randomNumber(2, (len - 8), benchmark.rng());
-                        stock.s_data = TPCCUtil.randomStr(startORIGINAL - 1) + "ORIGINAL" + TPCCUtil.randomStr(len - startORIGINAL - 9);
+            Thread writerThread = new Thread(() -> {
+                try (PrintWriter writer = new PrintWriter(outStream, true)) {
+                    writer.print(header);
+
+                    long rowCount = 0;
+                    for (int w_id = start_id; w_id <= last_id; ++w_id) {
+                        for (int i = 1; i <= numItems; i++) {
+                            Stock stock = new Stock();
+                            stock.s_i_id = i;
+                            stock.s_w_id = w_id;
+                            stock.s_quantity = TPCCUtil.randomNumber(10, 100, benchmark.rng());
+                            stock.s_ytd = 0;
+                            stock.s_order_cnt = 0;
+                            stock.s_remote_cnt = 0;
+
+                            // s_data
+                            int randPct = TPCCUtil.randomNumber(1, 100, benchmark.rng());
+                            int len = TPCCUtil.randomNumber(26, 50, benchmark.rng());
+                            if (randPct > 10) {
+                                // 90% of time i_data isa random string of length [26 ..
+                                // 50]
+                                stock.s_data = TPCCUtil.randomStr(len);
+                            } else {
+                                // 10% of time i_data has "ORIGINAL" crammed somewhere
+                                // in middle
+                                int startORIGINAL = TPCCUtil.randomNumber(2, (len - 8), benchmark.rng());
+                                stock.s_data = TPCCUtil.randomStr(startORIGINAL - 1) + "ORIGINAL" + TPCCUtil.randomStr(len - startORIGINAL - 9);
+                            }
+
+                            writer.print(stock.s_w_id);
+                            writer.print(",");
+                            writer.print(stock.s_i_id);
+                            writer.print(",");
+                            writer.print(stock.s_quantity);
+                            writer.print(",");
+                            writer.print(stock.s_ytd);
+                            writer.print(",");
+                            writer.print(stock.s_order_cnt);
+                            writer.print(",");
+                            writer.print(stock.s_remote_cnt);
+                            writer.print(",");
+                            writer.print(stock.s_data);
+
+                            for (int j = 0; j < 10; j++) {
+                                writer.print(",");
+                                writer.print(TPCCUtil.randomStr(24));
+                            }
+
+                            writer.print("\n");
+
+                            rowCount++;
+                            if (rowCount % workConf.getBatchSize() == 0) {
+                                writer.flush();
+                            }
+                        }
                     }
 
-                    int idx = 1;
-                    stockPreparedStatement.setLong(idx++, stock.s_w_id);
-                    stockPreparedStatement.setLong(idx++, stock.s_i_id);
-                    stockPreparedStatement.setLong(idx++, stock.s_quantity);
-                    stockPreparedStatement.setDouble(idx++, stock.s_ytd);
-                    stockPreparedStatement.setLong(idx++, stock.s_order_cnt);
-                    stockPreparedStatement.setLong(idx++, stock.s_remote_cnt);
-                    stockPreparedStatement.setString(idx++, stock.s_data);
-                    stockPreparedStatement.setString(idx++, TPCCUtil.randomStr(24));
-                    stockPreparedStatement.setString(idx++, TPCCUtil.randomStr(24));
-                    stockPreparedStatement.setString(idx++, TPCCUtil.randomStr(24));
-                    stockPreparedStatement.setString(idx++, TPCCUtil.randomStr(24));
-                    stockPreparedStatement.setString(idx++, TPCCUtil.randomStr(24));
-                    stockPreparedStatement.setString(idx++, TPCCUtil.randomStr(24));
-                    stockPreparedStatement.setString(idx++, TPCCUtil.randomStr(24));
-                    stockPreparedStatement.setString(idx++, TPCCUtil.randomStr(24));
-                    stockPreparedStatement.setString(idx++, TPCCUtil.randomStr(24));
-                    stockPreparedStatement.setString(idx, TPCCUtil.randomStr(24));
-
-                    stockPreparedStatement.addBatch();
-                    batchSize++;
-                    if (batchSize == workConf.getBatchSize()) {
-                        stockPreparedStatement.executeBatch();
-                        stockPreparedStatement.clearBatch();
-                        batchSize = 0;
-                    }
+                    writer.flush();
+                } catch (Exception e) {
+                    e.printStackTrace();
+                    System.exit(-1);
                 }
-            }
+            });
 
-            if (batchSize > 0) {
-                stockPreparedStatement.executeBatch();
-                stockPreparedStatement.clearBatch();
-            }
+            writerThread.start();
 
-        } catch (SQLException se) {
-            LOG.error(se.getMessage());
+            CopyManager copyManager = new CopyManager(conn.unwrap(BaseConnection.class));
+            copyManager.copyIn(
+                "COPY " + TPCCConstants.TABLENAME_STOCK + " FROM STDIN DELIMITER ',' NULL AS 'null' CSV header",
+                inStream);
+            writerThread.join();
+        } catch (Exception e) {
+            e.printStackTrace();
+            System.exit(-1);
         }
-
     }
 
     protected void loadDistricts(Connection conn, int start_id, int last_id, int districtsPerWarehouse) {
@@ -405,99 +433,141 @@ public class TPCCLoader extends Loader<TPCCBenchmark> {
     }
 
     protected void loadCustomers(Connection conn, int start_id, int last_id, int districtsPerWarehouse, int customersPerDistrict) {
+        final String header = "c_w_id,c_d_id,c_id,c_discount,c_credit,c_last,c_first,c_credit_lim,c_balance,c_ytd_payment," +
+            "c_payment_cnt,c_delivery_cnt,c_street_1,c_street_2,c_city,c_state,c_zip,c_phone,c_since,c_middle,c_data\n";
 
-        try (PreparedStatement custPrepStmt = getInsertStatement(conn, TPCCConstants.TABLENAME_CUSTOMER)) {
-            int batchSize = 0;
-            for (int w_id = start_id; w_id <= last_id; w_id++) {
-                for (int d = 1; d <= districtsPerWarehouse; d++) {
-                    for (int c = 1; c <= customersPerDistrict; c++) {
-                        Timestamp sysdate = new Timestamp(System.currentTimeMillis());
+        try {
+            PipedOutputStream outStream = new PipedOutputStream();
+            PipedInputStream inStream = new PipedInputStream(outStream);
 
-                        Customer customer = new Customer();
-                        customer.c_id = c;
-                        customer.c_d_id = d;
-                        customer.c_w_id = w_id;
+            Thread writerThread = new Thread(() -> {
+                try (PrintWriter writer = new PrintWriter(outStream, true)) {
+                    writer.print(header);
 
-                        // discount is random between [0.0000 ... 0.5000]
-                        customer.c_discount = (float) (TPCCUtil.randomNumber(1, 5000, benchmark.rng()) / 10000.0);
+                    long rowCount = 0;
+                    for (int w_id = start_id; w_id <= last_id; w_id++) {
+                        for (int d = 1; d <= districtsPerWarehouse; d++) {
+                            for (int c = 1; c <= customersPerDistrict; c++) {
+                                Timestamp sysdate = new Timestamp(System.currentTimeMillis());
 
-                        if (TPCCUtil.randomNumber(1, 100, benchmark.rng()) <= 10) {
-                            customer.c_credit = "BC"; // 10% Bad Credit
-                        } else {
-                            customer.c_credit = "GC"; // 90% Good Credit
-                        }
-                        if (c <= 1000) {
-                            customer.c_last = TPCCUtil.getLastName(c - 1);
-                        } else {
-                            customer.c_last = TPCCUtil.getNonUniformRandomLastNameForLoad(benchmark.rng());
-                        }
-                        customer.c_first = TPCCUtil.randomStr(TPCCUtil.randomNumber(8, 16, benchmark.rng()));
-                        customer.c_credit_lim = 50000;
+                                Customer customer = new Customer();
+                                customer.c_id = c;
+                                customer.c_d_id = d;
+                                customer.c_w_id = w_id;
 
-                        customer.c_balance = -10;
-                        customer.c_ytd_payment = 10;
-                        customer.c_payment_cnt = 1;
-                        customer.c_delivery_cnt = 0;
+                                // discount is random between [0.0000 ... 0.5000]
+                                customer.c_discount = (float) (TPCCUtil.randomNumber(1, 5000, benchmark.rng()) / 10000.0);
 
-                        customer.c_street_1 = TPCCUtil.randomStr(TPCCUtil.randomNumber(10, 20, benchmark.rng()));
-                        customer.c_street_2 = TPCCUtil.randomStr(TPCCUtil.randomNumber(10, 20, benchmark.rng()));
-                        customer.c_city = TPCCUtil.randomStr(TPCCUtil.randomNumber(10, 20, benchmark.rng()));
-                        customer.c_state = TPCCUtil.randomStr(3).toUpperCase();
-                        // TPC-C 4.3.2.7: 4 random digits + "11111"
-                        customer.c_zip = TPCCUtil.randomNStr(4) + "11111";
-                        customer.c_phone = TPCCUtil.randomNStr(16);
-                        customer.c_since = sysdate;
-                        customer.c_middle = "OE";
-                        customer.c_data = TPCCUtil.randomStr(TPCCUtil.randomNumber(300, 500, benchmark.rng()));
+                                if (TPCCUtil.randomNumber(1, 100, benchmark.rng()) <= 10) {
+                                    customer.c_credit = "BC"; // 10% Bad Credit
+                                } else {
+                                    customer.c_credit = "GC"; // 90% Good Credit
+                                }
+                                if (c <= 1000) {
+                                    customer.c_last = TPCCUtil.getLastName(c - 1);
+                                } else {
+                                    customer.c_last = TPCCUtil.getNonUniformRandomLastNameForLoad(benchmark.rng());
+                                }
+                                customer.c_first = TPCCUtil.randomStr(TPCCUtil.randomNumber(8, 16, benchmark.rng()));
+                                customer.c_credit_lim = 50000;
 
-                        int idx = 1;
-                        custPrepStmt.setLong(idx++, customer.c_w_id);
-                        custPrepStmt.setLong(idx++, customer.c_d_id);
-                        custPrepStmt.setLong(idx++, customer.c_id);
-                        custPrepStmt.setDouble(idx++, customer.c_discount);
-                        custPrepStmt.setString(idx++, customer.c_credit);
-                        custPrepStmt.setString(idx++, customer.c_last);
-                        custPrepStmt.setString(idx++, customer.c_first);
-                        custPrepStmt.setDouble(idx++, customer.c_credit_lim);
-                        custPrepStmt.setDouble(idx++, customer.c_balance);
-                        custPrepStmt.setDouble(idx++, customer.c_ytd_payment);
-                        custPrepStmt.setLong(idx++, customer.c_payment_cnt);
-                        custPrepStmt.setLong(idx++, customer.c_delivery_cnt);
-                        custPrepStmt.setString(idx++, customer.c_street_1);
-                        custPrepStmt.setString(idx++, customer.c_street_2);
-                        custPrepStmt.setString(idx++, customer.c_city);
-                        custPrepStmt.setString(idx++, customer.c_state);
-                        custPrepStmt.setString(idx++, customer.c_zip);
-                        custPrepStmt.setString(idx++, customer.c_phone);
-                        custPrepStmt.setTimestamp(idx++, customer.c_since);
-                        custPrepStmt.setString(idx++, customer.c_middle);
-                        custPrepStmt.setString(idx, customer.c_data);
+                                customer.c_balance = -10;
+                                customer.c_ytd_payment = 10;
+                                customer.c_payment_cnt = 1;
+                                customer.c_delivery_cnt = 0;
 
-                        custPrepStmt.addBatch();
-                        batchSize++;
-                        if (batchSize == workConf.getBatchSize()) {
-                            custPrepStmt.executeBatch();
-                            custPrepStmt.clearBatch();
-                            batchSize = 0;
+                                customer.c_street_1 = TPCCUtil.randomStr(TPCCUtil.randomNumber(10, 20, benchmark.rng()));
+                                customer.c_street_2 = TPCCUtil.randomStr(TPCCUtil.randomNumber(10, 20, benchmark.rng()));
+                                customer.c_city = TPCCUtil.randomStr(TPCCUtil.randomNumber(10, 20, benchmark.rng()));
+                                customer.c_state = TPCCUtil.randomStr(3).toUpperCase();
+                                // TPC-C 4.3.2.7: 4 random digits + "11111"
+                                customer.c_zip = TPCCUtil.randomNStr(4) + "11111";
+                                customer.c_phone = TPCCUtil.randomNStr(16);
+                                customer.c_since = sysdate;
+                                customer.c_middle = "OE";
+                                customer.c_data = TPCCUtil.randomStr(TPCCUtil.randomNumber(300, 500, benchmark.rng()));
+
+                                writer.print(customer.c_w_id);
+                                writer.print(",");
+                                writer.print(customer.c_d_id);
+                                writer.print(",");
+                                writer.print(customer.c_id);
+                                writer.print(",");
+                                writer.print(customer.c_discount);
+                                writer.print(",");
+                                writer.print(customer.c_credit);
+                                writer.print(",");
+                                writer.print(customer.c_last);
+                                writer.print(",");
+                                writer.print(customer.c_first);
+                                writer.print(",");
+                                writer.print(customer.c_credit_lim);
+                                writer.print(",");
+                                writer.print(customer.c_balance);
+                                writer.print(",");
+                                writer.print(customer.c_ytd_payment);
+                                writer.print(",");
+                                writer.print(customer.c_payment_cnt);
+                                writer.print(",");
+                                writer.print(customer.c_delivery_cnt);
+                                writer.print(",");
+                                writer.print(customer.c_street_1);
+                                writer.print(",");
+                                writer.print(customer.c_street_2);
+                                writer.print(",");
+                                writer.print(customer.c_city);
+                                writer.print(",");
+                                writer.print(customer.c_state);
+                                writer.print(",");
+                                writer.print(customer.c_zip);
+                                writer.print(",");
+                                writer.print(customer.c_phone);
+                                writer.print(",");
+                                writer.print(customer.c_since);
+                                writer.print(",");
+                                writer.print(customer.c_middle);
+                                writer.print(",");
+                                writer.print(customer.c_data);
+                                writer.print("\n");
+
+                                rowCount++;
+                                if (rowCount % workConf.getBatchSize() == 0) {
+                                    writer.flush();
+                                }
+                            }
                         }
                     }
+
+                    writer.flush();
+                } catch (Exception e) {
+                    e.printStackTrace();
+                    System.exit(-1);
                 }
-            }
+            });
 
-            if (batchSize > 0) {
-                custPrepStmt.executeBatch();
-                custPrepStmt.clearBatch();
-            }
+            writerThread.start();
 
-        } catch (SQLException se) {
-            LOG.error(se.getMessage());
+            CopyManager copyManager = new CopyManager(conn.unwrap(BaseConnection.class));
+            copyManager.copyIn(
+                "COPY " + TPCCConstants.TABLENAME_CUSTOMER + " FROM STDIN DELIMITER ',' NULL AS 'null' CSV header",
+                inStream);
+            writerThread.join();
+        } catch (Exception e) {
+            e.printStackTrace();
+            System.exit(-1);
         }
-
     }
 
     protected void loadCustomerHistory(Connection conn, int start_id, int last_id, int districtsPerWarehouse, int customersPerDistrict) {
+        final long bufSizeLong = 2_000_000L *  (long)workConf.getBatchSize();
+        final int bufSize = bufSizeLong > 1_000_000_000 ? 1_000_000_000 : (int)bufSizeLong;
 
-        try (PreparedStatement histPrepStmt = getInsertStatement(conn, TPCCConstants.TABLENAME_HISTORY)) {
+        try {
+            String header = "h_c_id,h_c_d_id,h_c_w_id,h_d_id,h_w_id,h_date,h_amount,h_data\n";
+
+            ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream(bufSize);
+            byteArrayOutputStream.write(header.getBytes(StandardCharsets.UTF_8));
+
             int batchSize = 0;
             for (int w_id = start_id; w_id <= last_id; ++w_id) {
 
@@ -515,22 +585,28 @@ public class TPCCLoader extends Loader<TPCCBenchmark> {
                         history.h_amount = 10;
                         history.h_data = TPCCUtil.randomStr(TPCCUtil.randomNumber(10, 24, benchmark.rng()));
 
+                        byteArrayOutputStream.write(String.valueOf(history.h_c_id).getBytes(StandardCharsets.UTF_8));
+                        byteArrayOutputStream.write(",".getBytes(StandardCharsets.UTF_8));
+                        byteArrayOutputStream.write(String.valueOf(history.h_c_d_id).getBytes(StandardCharsets.UTF_8));
+                        byteArrayOutputStream.write(",".getBytes(StandardCharsets.UTF_8));
+                        byteArrayOutputStream.write(String.valueOf(history.h_c_w_id).getBytes(StandardCharsets.UTF_8));
+                        byteArrayOutputStream.write(",".getBytes(StandardCharsets.UTF_8));
+                        byteArrayOutputStream.write(String.valueOf(history.h_d_id).getBytes(StandardCharsets.UTF_8));
+                        byteArrayOutputStream.write(",".getBytes(StandardCharsets.UTF_8));
+                        byteArrayOutputStream.write(String.valueOf(history.h_w_id).getBytes(StandardCharsets.UTF_8));
+                        byteArrayOutputStream.write(",".getBytes(StandardCharsets.UTF_8));
+                        byteArrayOutputStream.write(String.valueOf(history.h_date).getBytes(StandardCharsets.UTF_8));
+                        byteArrayOutputStream.write(",".getBytes(StandardCharsets.UTF_8));
+                        byteArrayOutputStream.write(String.valueOf(history.h_amount).getBytes(StandardCharsets.UTF_8));
+                        byteArrayOutputStream.write(",".getBytes(StandardCharsets.UTF_8));
+                        byteArrayOutputStream.write(String.valueOf(history.h_data).getBytes(StandardCharsets.UTF_8));
 
-                        int idx = 1;
-                        histPrepStmt.setInt(idx++, history.h_c_id);
-                        histPrepStmt.setInt(idx++, history.h_c_d_id);
-                        histPrepStmt.setInt(idx++, history.h_c_w_id);
-                        histPrepStmt.setInt(idx++, history.h_d_id);
-                        histPrepStmt.setInt(idx++, history.h_w_id);
-                        histPrepStmt.setTimestamp(idx++, history.h_date);
-                        histPrepStmt.setDouble(idx++, history.h_amount);
-                        histPrepStmt.setString(idx, history.h_data);
-
-                        histPrepStmt.addBatch();
+                        byteArrayOutputStream.write("\n".getBytes(StandardCharsets.UTF_8));
                         batchSize++;
                         if (batchSize == workConf.getBatchSize()) {
-                            histPrepStmt.executeBatch();
-                            histPrepStmt.clearBatch();
+                            doCopy(conn, TPCCConstants.TABLENAME_HISTORY, byteArrayOutputStream);
+                            byteArrayOutputStream.reset();
+                            byteArrayOutputStream.write(header.getBytes(StandardCharsets.UTF_8));
                             batchSize = 0;
                         }
                     }
@@ -538,19 +614,31 @@ public class TPCCLoader extends Loader<TPCCBenchmark> {
             }
 
             if (batchSize > 0) {
-                histPrepStmt.executeBatch();
-                histPrepStmt.clearBatch();
+                doCopy(conn, TPCCConstants.TABLENAME_HISTORY, byteArrayOutputStream);
+                byteArrayOutputStream.reset();
+                batchSize = 0;
             }
 
         } catch (SQLException se) {
             LOG.error(se.getMessage());
+            System.exit(-1);
+        } catch (IOException e) {
+            e.printStackTrace();
+            System.exit(-1);
         }
 
     }
 
     protected void loadOpenOrders(Connection conn, int start_id, int last_id, int districtsPerWarehouse, int customersPerDistrict) {
 
-        try (PreparedStatement openOrderStatement = getInsertStatement(conn, TPCCConstants.TABLENAME_OPENORDER)) {
+        final long bufSizeLong = 2_000_000L *  (long)workConf.getBatchSize();
+        final int bufSize = bufSizeLong > 1_000_000_000 ? 1_000_000_000 : (int)bufSizeLong;
+        try {
+            String header = "o_w_id,o_d_id,o_id,o_c_id,o_carrier_id,o_ol_cnt,o_all_local,o_entry_d\n";
+
+            ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream(bufSize);
+            byteArrayOutputStream.write(header.getBytes(StandardCharsets.UTF_8));
+
             int batchSize = 0;
             for (int w_id = start_id; w_id <= last_id; ++w_id) {
 
@@ -589,26 +677,32 @@ public class TPCCLoader extends Loader<TPCCBenchmark> {
                         oorder.o_all_local = 1;
                         oorder.o_entry_d = new Timestamp(System.currentTimeMillis());
 
-
-                        int idx = 1;
-                        openOrderStatement.setInt(idx++, oorder.o_w_id);
-                        openOrderStatement.setInt(idx++, oorder.o_d_id);
-                        openOrderStatement.setInt(idx++, oorder.o_id);
-                        openOrderStatement.setInt(idx++, oorder.o_c_id);
+                        byteArrayOutputStream.write(String.valueOf(oorder.o_w_id).getBytes(StandardCharsets.UTF_8));
+                        byteArrayOutputStream.write(",".getBytes(StandardCharsets.UTF_8));
+                        byteArrayOutputStream.write(String.valueOf(oorder.o_d_id).getBytes(StandardCharsets.UTF_8));
+                        byteArrayOutputStream.write(",".getBytes(StandardCharsets.UTF_8));
+                        byteArrayOutputStream.write(String.valueOf(oorder.o_id).getBytes(StandardCharsets.UTF_8));
+                        byteArrayOutputStream.write(",".getBytes(StandardCharsets.UTF_8));
+                        byteArrayOutputStream.write(String.valueOf(oorder.o_c_id).getBytes(StandardCharsets.UTF_8));
+                        byteArrayOutputStream.write(",".getBytes(StandardCharsets.UTF_8));
                         if (oorder.o_carrier_id != null) {
-                            openOrderStatement.setInt(idx++, oorder.o_carrier_id);
+                            byteArrayOutputStream.write(String.valueOf(oorder.o_carrier_id).getBytes(StandardCharsets.UTF_8));
                         } else {
-                            openOrderStatement.setNull(idx++, Types.INTEGER);
+                            byteArrayOutputStream.write("null".getBytes(StandardCharsets.UTF_8));
                         }
-                        openOrderStatement.setInt(idx++, oorder.o_ol_cnt);
-                        openOrderStatement.setInt(idx++, oorder.o_all_local);
-                        openOrderStatement.setTimestamp(idx, oorder.o_entry_d);
+                        byteArrayOutputStream.write(",".getBytes(StandardCharsets.UTF_8));
+                        byteArrayOutputStream.write(String.valueOf(oorder.o_ol_cnt).getBytes(StandardCharsets.UTF_8));
+                        byteArrayOutputStream.write(",".getBytes(StandardCharsets.UTF_8));
+                        byteArrayOutputStream.write(String.valueOf(oorder.o_all_local).getBytes(StandardCharsets.UTF_8));
+                        byteArrayOutputStream.write(",".getBytes(StandardCharsets.UTF_8));
+                        byteArrayOutputStream.write(String.valueOf(oorder.o_entry_d).getBytes(StandardCharsets.UTF_8));
 
-                        openOrderStatement.addBatch();
+                        byteArrayOutputStream.write("\n".getBytes(StandardCharsets.UTF_8));
                         batchSize++;
                         if (batchSize == workConf.getBatchSize()) {
-                            openOrderStatement.executeBatch();
-                            openOrderStatement.clearBatch();
+                            doCopy(conn, TPCCConstants.TABLENAME_OPENORDER, byteArrayOutputStream);
+                            byteArrayOutputStream.reset();
+                            byteArrayOutputStream.write(header.getBytes(StandardCharsets.UTF_8));
                             batchSize = 0;
                         }
                     }
@@ -616,12 +710,17 @@ public class TPCCLoader extends Loader<TPCCBenchmark> {
             }
 
             if (batchSize > 0) {
-                openOrderStatement.executeBatch();
-                openOrderStatement.clearBatch();
+                doCopy(conn, TPCCConstants.TABLENAME_OPENORDER, byteArrayOutputStream);
+                byteArrayOutputStream.reset();
+                batchSize = 0;
             }
 
         } catch (SQLException se) {
-            LOG.error(se.getMessage(), se);
+            LOG.error(se.getMessage());
+            System.exit(-1);
+        } catch (IOException e) {
+            e.printStackTrace();
+            System.exit(-1);
         }
 
     }
@@ -683,8 +782,15 @@ public class TPCCLoader extends Loader<TPCCBenchmark> {
     }
 
     protected void loadOrderLines(Connection conn, int start_id, int last_id, int districtsPerWarehouse, int customersPerDistrict) {
+        final long bufSizeLong = 20_000_000L *  (long)workConf.getBatchSize();
+        final int bufSize = bufSizeLong > 1_000_000_000 ? 1_000_000_000 : (int)bufSizeLong;
+        try {
+            String header = "ol_w_id,ol_d_id,ol_o_id,ol_number,ol_i_id,ol_delivery_d,ol_amount,ol_supply_w_id," +
+                "ol_quantity,ol_dist_info\n";
 
-        try (PreparedStatement orderLineStatement = getInsertStatement(conn, TPCCConstants.TABLENAME_ORDERLINE)) {
+            ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream(bufSize);
+            byteArrayOutputStream.write(header.getBytes(StandardCharsets.UTF_8));
+
             int batchSize = 0;
             for (int w_id = start_id; w_id <= last_id; ++w_id) {
                 for (int d = 1; d <= districtsPerWarehouse; d++) {
@@ -712,30 +818,38 @@ public class TPCCLoader extends Loader<TPCCBenchmark> {
                             order_line.ol_quantity = 5;
                             order_line.ol_dist_info = TPCCUtil.randomStr(24);
 
-                            int idx = 1;
-                            orderLineStatement.setInt(idx++, order_line.ol_w_id);
-                            orderLineStatement.setInt(idx++, order_line.ol_d_id);
-                            orderLineStatement.setInt(idx++, order_line.ol_o_id);
-                            orderLineStatement.setInt(idx++, order_line.ol_number);
-                            orderLineStatement.setLong(idx++, order_line.ol_i_id);
+                            byteArrayOutputStream.write(String.valueOf(order_line.ol_w_id).getBytes(StandardCharsets.UTF_8));
+                            byteArrayOutputStream.write(",".getBytes(StandardCharsets.UTF_8));
+                            byteArrayOutputStream.write(String.valueOf(order_line.ol_d_id).getBytes(StandardCharsets.UTF_8));
+                            byteArrayOutputStream.write(",".getBytes(StandardCharsets.UTF_8));
+                            byteArrayOutputStream.write(String.valueOf(order_line.ol_o_id).getBytes(StandardCharsets.UTF_8));
+                            byteArrayOutputStream.write(",".getBytes(StandardCharsets.UTF_8));
+                            byteArrayOutputStream.write(String.valueOf(order_line.ol_number).getBytes(StandardCharsets.UTF_8));
+                            byteArrayOutputStream.write(",".getBytes(StandardCharsets.UTF_8));
+                            byteArrayOutputStream.write(String.valueOf(order_line.ol_i_id).getBytes(StandardCharsets.UTF_8));
+                            byteArrayOutputStream.write(",".getBytes(StandardCharsets.UTF_8));
                             if (order_line.ol_delivery_d != null) {
-                                orderLineStatement.setTimestamp(idx++, order_line.ol_delivery_d);
+                                byteArrayOutputStream.write(String.valueOf(order_line.ol_delivery_d).getBytes(StandardCharsets.UTF_8));
                             } else {
-                                orderLineStatement.setNull(idx++, 0);
+                                byteArrayOutputStream.write("null".getBytes(StandardCharsets.UTF_8));
                             }
-                            orderLineStatement.setDouble(idx++, order_line.ol_amount);
-                            orderLineStatement.setLong(idx++, order_line.ol_supply_w_id);
-                            orderLineStatement.setDouble(idx++, order_line.ol_quantity);
-                            orderLineStatement.setString(idx, order_line.ol_dist_info);
+                            byteArrayOutputStream.write(",".getBytes(StandardCharsets.UTF_8));
+                            byteArrayOutputStream.write(String.valueOf(order_line.ol_amount).getBytes(StandardCharsets.UTF_8));
+                            byteArrayOutputStream.write(",".getBytes(StandardCharsets.UTF_8));
+                            byteArrayOutputStream.write(String.valueOf(order_line.ol_supply_w_id).getBytes(StandardCharsets.UTF_8));
+                            byteArrayOutputStream.write(",".getBytes(StandardCharsets.UTF_8));
+                            byteArrayOutputStream.write(String.valueOf(order_line.ol_quantity).getBytes(StandardCharsets.UTF_8));
+                            byteArrayOutputStream.write(",".getBytes(StandardCharsets.UTF_8));
+                            byteArrayOutputStream.write(String.valueOf(order_line.ol_dist_info).getBytes(StandardCharsets.UTF_8));
 
-                            orderLineStatement.addBatch();
+                            byteArrayOutputStream.write("\n".getBytes(StandardCharsets.UTF_8));
                             batchSize++;
                             if (batchSize == workConf.getBatchSize()) {
-                                orderLineStatement.executeBatch();
-                                orderLineStatement.clearBatch();
+                                doCopy(conn, TPCCConstants.TABLENAME_ORDERLINE, byteArrayOutputStream);
+                                byteArrayOutputStream.reset();
+                                byteArrayOutputStream.write(header.getBytes(StandardCharsets.UTF_8));
                                 batchSize = 0;
                             }
-
                         }
 
                     }
@@ -744,14 +858,27 @@ public class TPCCLoader extends Loader<TPCCBenchmark> {
             }
 
             if (batchSize > 0) {
-                orderLineStatement.executeBatch();
-                orderLineStatement.clearBatch();
+                doCopy(conn, TPCCConstants.TABLENAME_ORDERLINE, byteArrayOutputStream);
+                byteArrayOutputStream.reset();
+                batchSize = 0;
             }
 
         } catch (SQLException se) {
-            LOG.error(se.getMessage(), se);
+            LOG.error(se.getMessage());
+            System.exit(-1);
+        } catch (IOException e) {
+            e.printStackTrace();
+            System.exit(-1);
         }
 
+    }
+
+    private static long doCopy(Connection conn, String tableName, ByteArrayOutputStream byteArrayOutputStream) throws SQLException, IOException {
+        ByteArrayInputStream inputStream = new ByteArrayInputStream(byteArrayOutputStream.toByteArray());
+        CopyManager copyManager = new CopyManager(conn.unwrap(BaseConnection.class));
+        return copyManager.copyIn(
+            "COPY " + tableName + " FROM STDIN DELIMITER ',' NULL AS 'null' CSV header",
+            inputStream);
     }
 
 }
