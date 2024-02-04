@@ -22,7 +22,6 @@ import com.oltpbenchmark.api.Loader;
 import com.oltpbenchmark.api.LoaderThread;
 import com.oltpbenchmark.benchmarks.tpcc.pojo.*;
 import com.oltpbenchmark.catalog.Table;
-import com.oltpbenchmark.util.ThreadLocalRandomGenerator;
 import com.oltpbenchmark.util.SQLUtil;
 
 import java.sql.*;
@@ -54,63 +53,117 @@ public class TPCCLoader extends Loader<TPCCBenchmark> {
         final int firstWarehouse = this.startFromId;
         final int lastWarehouse = this.startFromId + (int)numWarehouses - 1;
         final int lastWarehouseInCompany = lastWarehouse;
+        final int warehousesPerThread = Math.max((int)numWarehouses / maxConcurrent, 1);
+        final int threadsPerTable = ((int)numWarehouses + warehousesPerThread - 1) / warehousesPerThread;
 
-        // ITEM, WAREHOUSE, DISTRICT
+        final CountDownLatch warehouseItemDistrictLatch = new CountDownLatch(1);
+        final CountDownLatch stockCustomerLatch = new CountDownLatch(threadsPerTable);
+        final CountDownLatch historyOpenOrdersLatch = new CountDownLatch(threadsPerTable);
+
         if (firstWarehouse == 1) {
             threads.add(new LoaderThread(this.benchmark) {
                 @Override
                 public void load(Connection conn) {
-                    loadItems(conn, TPCCConfig.configItemCount);
                     loadWarehouses(conn, firstWarehouse, lastWarehouseInCompany);
+                    loadItems(conn, TPCCConfig.configItemCount);
                     loadDistricts(conn, firstWarehouse, lastWarehouseInCompany, TPCCConfig.configDistPerWhse);
-                    loadNewOrders(conn, firstWarehouse, lastWarehouseInCompany, TPCCConfig.configDistPerWhse, TPCCConfig.configCustPerDist);
+                }
+
+                @Override
+                public void afterLoad() {
+                    warehouseItemDistrictLatch.countDown();
                 }
             });
         }
 
-        int warehousesPerThread = Math.max((int)numWarehouses / maxConcurrent, 1);
         for (int w = this.startFromId; w <= lastWarehouse; w += warehousesPerThread) {
             final int loadFrom = w;
             final int loadUntil = Math.min(loadFrom + warehousesPerThread - 1, lastWarehouse);
             LoaderThread t = new LoaderThread(this.benchmark) {
                 @Override
-                public void load(Connection conn) {
-                    LOG.debug("Starting to load stock warehouses from {} to {}", loadFrom, loadUntil);
-                    loadStock(conn, loadFrom, loadUntil, TPCCConfig.configItemCount);
+                public void beforeLoad() {
+                    try {
+                        warehouseItemDistrictLatch.await();
+                    } catch (InterruptedException ex) {
+                        throw new RuntimeException(ex);
+                    }
                 }
-            };
-            threads.add(t);
 
-            t = new LoaderThread(this.benchmark) {
                 @Override
                 public void load(Connection conn) {
-                    LOG.debug("Starting to load customers warehouses from {} to {}", loadFrom, loadUntil);
+                    LOG.debug("Starting to load stock for warehouses from {} to {}", loadFrom, loadUntil);
+                    loadStock(conn, loadFrom, loadUntil, TPCCConfig.configItemCount);
+
+                    LOG.debug("Starting to load customers for warehouses from {} to {}", loadFrom, loadUntil);
                     loadCustomers(conn, loadFrom, loadUntil, TPCCConfig.configDistPerWhse, TPCCConfig.configCustPerDist);
                 }
-            };
-            threads.add(t);
 
-            t = new LoaderThread(this.benchmark) {
                 @Override
-                public void load(Connection conn) {
-                    LOG.debug("Starting to load order_line warehouses from {} to {}", loadFrom, loadUntil);
-                    loadOrderLines(conn, loadFrom, loadUntil, TPCCConfig.configDistPerWhse, TPCCConfig.configCustPerDist);
+                public void afterLoad() {
+                    stockCustomerLatch.countDown();
                 }
             };
             threads.add(t);
+        }
 
-            t = new LoaderThread(this.benchmark) {
+        for (int w = this.startFromId; w <= lastWarehouse; w += warehousesPerThread) {
+            final int loadFrom = w;
+            final int loadUntil = Math.min(loadFrom + warehousesPerThread - 1, lastWarehouse);
+
+            LoaderThread t = new LoaderThread(this.benchmark) {
+                @Override
+                public void beforeLoad() {
+                    try {
+                        stockCustomerLatch.await();
+                    } catch (InterruptedException ex) {
+                        throw new RuntimeException(ex);
+                    }
+                }
+
                 @Override
                 public void load(Connection conn) {
-                    LOG.debug("Starting to load history and open orders warehouses from {} to {}", loadFrom, loadUntil);
-
+                    LOG.debug("Starting to load history for warehouses from {} to {}", loadFrom, loadUntil);
                     loadCustomerHistory(conn, loadFrom, loadUntil, TPCCConfig.configDistPerWhse, TPCCConfig.configCustPerDist);
+
+                    LOG.debug("Starting to load open orders for warehouses from {} to {}", loadFrom, loadUntil);
                     loadOpenOrders(conn, loadFrom, loadUntil, TPCCConfig.configDistPerWhse, TPCCConfig.configCustPerDist);
                 }
+
+                @Override
+                public void afterLoad() {
+                    historyOpenOrdersLatch.countDown();
+                }
+            };
+
+            threads.add(t);
+        }
+
+        for (int w = this.startFromId; w <= lastWarehouse; w += warehousesPerThread) {
+            final int loadFrom = w;
+            final int loadUntil = Math.min(loadFrom + warehousesPerThread - 1, lastWarehouse);
+
+            LoaderThread t = new LoaderThread(this.benchmark) {
+                @Override
+                public void beforeLoad() {
+                    try {
+                        historyOpenOrdersLatch.await();
+                    } catch (InterruptedException ex) {
+                        throw new RuntimeException(ex);
+                    }
+                }
+
+                @Override
+                public void load(Connection conn) {
+                    LOG.debug("Starting to load order lines for warehouses from {} to {}", loadFrom, loadUntil);
+                    loadOrderLines(conn, loadFrom, loadUntil, TPCCConfig.configDistPerWhse, TPCCConfig.configCustPerDist);
+
+                    LOG.debug("Starting to load new orders for warehouses from {} to {}", loadFrom, loadUntil);
+                    loadNewOrders(conn, firstWarehouse, lastWarehouseInCompany, TPCCConfig.configDistPerWhse, TPCCConfig.configCustPerDist);
+                }
             };
             threads.add(t);
-
         }
+
         return (threads);
     }
 
