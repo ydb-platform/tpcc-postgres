@@ -24,6 +24,12 @@ import com.oltpbenchmark.api.TransactionTypes;
 import com.oltpbenchmark.api.Worker;
 import com.oltpbenchmark.types.DatabaseType;
 import com.oltpbenchmark.util.*;
+import io.micrometer.core.instrument.Metrics;
+import io.micrometer.core.instrument.Tags;
+import io.micrometer.prometheus.PrometheusConfig;
+import io.micrometer.prometheus.PrometheusMeterRegistry;
+import io.prometheus.client.exporter.HTTPServer;
+
 import org.apache.commons.cli.*;
 import org.apache.commons.collections4.map.ListOrderedMap;
 import org.apache.commons.configuration2.HierarchicalConfiguration;
@@ -41,6 +47,7 @@ import org.slf4j.LoggerFactory;
 import java.io.File;
 import java.io.IOException;
 import java.io.PrintStream;
+import java.net.InetSocketAddress;
 import java.sql.SQLException;
 import java.text.DecimalFormat;
 import java.text.ParseException;
@@ -369,6 +376,20 @@ public class DBWorkload {
 
         // Generate the dialect map
         wrkld.init();
+
+        int monitoringPort = xmlConfig.getInt("monitoringPort", 0);
+        if (monitoringPort > 0) {
+            LOG.info("Start prometeus metric collector on port {}", monitoringPort);
+            PrometheusMeterRegistry prometheusRegistry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
+            HTTPServer server = new HTTPServer(
+                    new InetSocketAddress(monitoringPort),
+                    prometheusRegistry.getPrometheusRegistry(),
+                    true);
+            LOG.info("Started {}", server);
+            Metrics.addRegistry(prometheusRegistry);
+            String instance = xmlConfig.getString("monitoringName", "benchbase");
+            Metrics.globalRegistry.config().commonTags(Tags.of("instance", instance));
+        }
 
         // Create the Benchmark's Database
         if (isBooleanOptionSet(argsLine, "create")) {

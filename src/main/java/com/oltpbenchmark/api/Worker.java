@@ -22,11 +22,16 @@ import com.oltpbenchmark.api.Procedure.UserAbortException;
 import com.oltpbenchmark.types.DatabaseType;
 import com.oltpbenchmark.types.TransactionStatus;
 import com.oltpbenchmark.util.Histogram;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Metrics;
+import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -37,6 +42,65 @@ import java.util.concurrent.ThreadLocalRandom;
 public abstract class Worker<T extends BenchmarkModule> implements Runnable {
     private static final Logger LOG = LoggerFactory.getLogger(Worker.class);
     private static final Logger ABORT_LOG = LoggerFactory.getLogger("com.oltpbenchmark.api.ABORT_LOG");
+
+    private static final AtomicInteger WORKERS_SLEEPING = new AtomicInteger(0);
+    private static final AtomicInteger WORKERS_WORKING = new AtomicInteger(0);
+
+    private static final Gauge WORKERS_SLEEPING_GAUGE = Gauge.builder("workers", WORKERS_SLEEPING, AtomicInteger::get)
+            .tag("state", "sleeping")
+            .register(Metrics.globalRegistry);
+
+    private static final Gauge WORKERS_WORKING_GAUGE = Gauge.builder("workers", WORKERS_WORKING, AtomicInteger::get)
+            .tag("state", "working")
+            .register(Metrics.globalRegistry);
+
+    private static final Counter.Builder TRANSACTIONS = Counter.builder("transactions");
+    private static final Counter.Builder EXECUTIONS = Counter.builder("executions");
+    private static final Counter.Builder ERRORS = Counter.builder("errors");
+
+    private static final Timer.Builder TRANSACTION_DURATION = Timer.builder("transaction")
+            .serviceLevelObjectives(
+                    Duration.ofMillis(1),
+                    Duration.ofMillis(2),
+                    Duration.ofMillis(4),
+                    Duration.ofMillis(8),
+                    Duration.ofMillis(16),
+                    Duration.ofMillis(32),
+                    Duration.ofMillis(64),
+                    Duration.ofMillis(128),
+                    Duration.ofMillis(256),
+                    Duration.ofMillis(512),
+                    Duration.ofMillis(1024),
+                    Duration.ofMillis(2048),
+                    Duration.ofMillis(4096),
+                    Duration.ofMillis(8192),
+                    Duration.ofMillis(16384),
+                    Duration.ofMillis(32768),
+                    Duration.ofMillis(65536)
+            )
+            .publishPercentiles();
+
+    private static final Timer.Builder EXECUTION_DURATION = Timer.builder("execution")
+            .serviceLevelObjectives(
+                    Duration.ofMillis(1),
+                    Duration.ofMillis(2),
+                    Duration.ofMillis(4),
+                    Duration.ofMillis(8),
+                    Duration.ofMillis(16),
+                    Duration.ofMillis(32),
+                    Duration.ofMillis(64),
+                    Duration.ofMillis(128),
+                    Duration.ofMillis(256),
+                    Duration.ofMillis(512),
+                    Duration.ofMillis(1024),
+                    Duration.ofMillis(2048),
+                    Duration.ofMillis(4096),
+                    Duration.ofMillis(8192),
+                    Duration.ofMillis(16384),
+                    Duration.ofMillis(32768),
+                    Duration.ofMillis(65536)
+            )
+            .publishPercentiles();
 
     private ResultStats resultStats;
 
@@ -226,16 +290,29 @@ public abstract class Worker<T extends BenchmarkModule> implements Runnable {
                     LOG.debug("Worker {}: {} will sleep for {} ms before executing",
                         id, transactionType.getName(), preExecutionWaitInMillis);
 
+                    WORKERS_SLEEPING.incrementAndGet();
                     Thread.sleep(preExecutionWaitInMillis);
+                    WORKERS_SLEEPING.decrementAndGet();
                     LOG.debug("Worker {} woke up to execute {}", id, transactionType.getName());
                 } catch (InterruptedException e) {
                     LOG.error("Worker {} pre-execution sleep interrupted", id, e);
                 }
             }
 
+            WORKERS_WORKING.incrementAndGet();
             long start = System.nanoTime();
+
             TransactionStatus status = doWork(configuration.getDatabaseType(), transactionType);
+
             long end = System.nanoTime();
+            WORKERS_WORKING.decrementAndGet();
+
+            TRANSACTIONS.tag("type", "any").register(Metrics.globalRegistry).increment();
+            TRANSACTIONS.tag("type", transactionType.getName()).register(Metrics.globalRegistry).increment();
+            TRANSACTION_DURATION.tag("type", "any").register(Metrics.globalRegistry)
+                    .record(Duration.ofNanos(end - start));
+            TRANSACTION_DURATION.tag("type", transactionType.getName()).register(Metrics.globalRegistry)
+                    .record(Duration.ofNanos(end - start));
 
             if (benchmarkState.isMeasuring()) {
                 boolean isSuccess = status == TransactionStatus.SUCCESS ||
@@ -254,7 +331,9 @@ public abstract class Worker<T extends BenchmarkModule> implements Runnable {
                     LOG.debug("Worker {} {} will sleep for {} ms after executing",
                         id, transactionType.getName(), postExecutionWaitInMillis);
 
+                    WORKERS_SLEEPING.incrementAndGet();
                     Thread.sleep(postExecutionWaitInMillis);
+                    WORKERS_SLEEPING.decrementAndGet();
                 } catch (InterruptedException e) {
                     LOG.error("Worker {} post-execution sleep interrupted", id, e);
                 }
@@ -300,6 +379,7 @@ public abstract class Worker<T extends BenchmarkModule> implements Runnable {
                     }
                 }
 
+                long start = System.nanoTime();
                 try {
                     LOG.debug("Worker {} is attempting {}", id, transactionType);
 
@@ -327,6 +407,13 @@ public abstract class Worker<T extends BenchmarkModule> implements Runnable {
 
                     break;
                 } catch (SQLException ex) {
+                    int errorCode = ex.getErrorCode();
+
+                    ERRORS.tag("type", "any")
+                            .register(Metrics.globalRegistry).increment();
+                    ERRORS.tag("type", String.valueOf(errorCode))
+                            .register(Metrics.globalRegistry).increment();
+
                     try {
                         LOG.debug("Worker {} rolled back transaction {}", id, transactionType);
                         conn.rollback();
@@ -365,6 +452,16 @@ public abstract class Worker<T extends BenchmarkModule> implements Runnable {
                             throw new RuntimeException("Failed to close connection", e);
                         }
                     }
+
+                    long end = System.nanoTime();
+
+                    EXECUTION_DURATION.tag("type", "any").register(Metrics.globalRegistry)
+                            .record(Duration.ofNanos(end - start));
+                    EXECUTION_DURATION.tag("type", status.toString()).register(Metrics.globalRegistry)
+                            .record(Duration.ofNanos(end - start));
+
+                    EXECUTIONS.tag("type", "any").register(Metrics.globalRegistry).increment();
+                    EXECUTIONS.tag("type", status.toString()).register(Metrics.globalRegistry).increment();
 
                     switch (status) {
                         case UNKNOWN -> this.txnUnknown.put(transactionType);

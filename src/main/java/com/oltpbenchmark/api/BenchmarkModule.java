@@ -26,6 +26,9 @@ import com.oltpbenchmark.util.ClassUtil;
 import com.oltpbenchmark.util.SQLUtil;
 import com.oltpbenchmark.util.ScriptRunner;
 import com.oltpbenchmark.util.ThreadUtil;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.Metrics;
+import io.micrometer.core.instrument.Timer;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -35,7 +38,9 @@ import java.io.InputStream;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
+import java.time.Duration;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.*;
 
 /**
@@ -44,22 +49,48 @@ import java.util.*;
 public abstract class BenchmarkModule {
     private static final Logger LOG = LoggerFactory.getLogger(BenchmarkModule.class);
 
-    private static ComboPooledDataSource dataSource;
-
     // We use virtual threads. There is a limitted number of c3p0 provided connections.
     // When c3p0 runs out of connections, it will block until one is available. Block in a way
     // that carrier threads are blocked. Same time other virtual threads holding connections
     // might be parked waiting for a carrier thread to be available. This will cause a deadlock.
     // To avoid this, we use a semaphore to wait for a connection without blocking the carrier thread.
-    //
-    // TODO: currently this breaks all non TPC-C benchmarks,
-    // because they have to call returnConnection() now
-    private static Semaphore connectionSemaphore;
+    private static Semaphore connectionSemaphore = new Semaphore(0);
+
+    private static final Gauge SESSIONS_USED = Gauge.builder("sessions", BenchmarkModule::getUsedConnectionCount)
+            .tag("state", "used")
+            .register(Metrics.globalRegistry);
+
+    private static final Gauge SESSIONS_QUEUE = Gauge.builder("session_queue_length", connectionSemaphore, Semaphore::getQueueLength)
+            .register(Metrics.globalRegistry);
+
+    private static final Timer.Builder GET_SESSION_DURATION = Timer.builder("get_session")
+            .serviceLevelObjectives(
+                    Duration.ofMillis(1),
+                    Duration.ofMillis(2),
+                    Duration.ofMillis(4),
+                    Duration.ofMillis(8),
+                    Duration.ofMillis(16),
+                    Duration.ofMillis(32),
+                    Duration.ofMillis(64),
+                    Duration.ofMillis(128),
+                    Duration.ofMillis(256),
+                    Duration.ofMillis(512),
+                    Duration.ofMillis(1024),
+                    Duration.ofMillis(2048),
+                    Duration.ofMillis(4096),
+                    Duration.ofMillis(8192),
+                    Duration.ofMillis(16384),
+                    Duration.ofMillis(32768),
+                    Duration.ofMillis(65536)
+            )
+            .publishPercentiles();
+
+    private static ComboPooledDataSource dataSource;
 
     /**
      * The workload configuration for this benchmark invocation
      */
-    protected final WorkloadConfiguration workConf;
+    protected static WorkloadConfiguration workConf;
 
     /**
      * These are the variations of the Procedure's Statement SQL
@@ -101,7 +132,7 @@ public abstract class BenchmarkModule {
                 dataSource.setMaxPoolSize(workConf.getMaxConnections());
                 dataSource.setMaxStatements(workConf.getMaxConnections());
 
-                connectionSemaphore = new Semaphore(workConf.getMaxConnections());
+                connectionSemaphore.release(workConf.getMaxConnections());
 
                 Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                     dataSource.close();
@@ -118,6 +149,7 @@ public abstract class BenchmarkModule {
     // --------------------------------------------------------------------------
 
     public final Connection makeConnection() throws SQLException {
+        long start = System.nanoTime();
         try {
             connectionSemaphore.acquire();
             return dataSource.getConnection();
@@ -127,11 +159,18 @@ public abstract class BenchmarkModule {
         } catch (InterruptedException e) {
             connectionSemaphore.release();
             throw new SQLException(e);
+        } finally {
+            long end = System.nanoTime();
+            GET_SESSION_DURATION.register(Metrics.globalRegistry).record(Duration.ofNanos(end - start));
         }
     }
 
     public final void returnConnection() {
         connectionSemaphore.release();
+    }
+
+    public final static double getUsedConnectionCount() {
+        return workConf.getMaxConnections() - connectionSemaphore.availablePermits();
     }
 
     // --------------------------------------------------------------------------
