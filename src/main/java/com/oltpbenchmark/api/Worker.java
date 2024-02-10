@@ -57,6 +57,7 @@ public abstract class Worker<T extends BenchmarkModule> implements Runnable {
     private static final Counter.Builder TRANSACTIONS = Counter.builder("transactions");
     private static final Counter.Builder EXECUTIONS = Counter.builder("executions");
     private static final Counter.Builder ERRORS = Counter.builder("errors");
+    private static final Counter.Builder CONNECTION_ERRORS = Counter.builder("connection_errors");
 
     private static final Timer.Builder TRANSACTION_DURATION = Timer.builder("transaction")
             .serviceLevelObjectives(
@@ -375,6 +376,12 @@ public abstract class Worker<T extends BenchmarkModule> implements Runnable {
                     } catch (SQLException ex) {
                         LOG.debug("Worker {} failed to open a connection: {}", id, ex);
                         retryCount++;
+
+                        CONNECTION_ERRORS.tag("type", "any")
+                                .register(Metrics.globalRegistry).increment();
+                        CONNECTION_ERRORS.tag("type", String.valueOf(ex.getErrorCode()))
+                                .register(Metrics.globalRegistry).increment();
+
                         continue;
                     }
                 }
