@@ -18,7 +18,6 @@
 
 package com.oltpbenchmark.api;
 
-import com.mchange.v2.c3p0.ComboPooledDataSource;
 import com.oltpbenchmark.WorkloadConfiguration;
 import com.oltpbenchmark.catalog.AbstractCatalog;
 import com.oltpbenchmark.types.DatabaseType;
@@ -26,9 +25,13 @@ import com.oltpbenchmark.util.ClassUtil;
 import com.oltpbenchmark.util.SQLUtil;
 import com.oltpbenchmark.util.ScriptRunner;
 import com.oltpbenchmark.util.ThreadUtil;
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.Timer;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -85,7 +88,7 @@ public abstract class BenchmarkModule {
             )
             .publishPercentiles();
 
-    private static ComboPooledDataSource dataSource;
+    private static HikariDataSource dataSource;
 
     /**
      * The workload configuration for this benchmark invocation
@@ -119,18 +122,14 @@ public abstract class BenchmarkModule {
 
         if (!workConf.getDisableConnectionPool() && dataSource == null) {
             try {
-                dataSource = new ComboPooledDataSource();
-                dataSource.setDriverClass("org.postgresql.Driver");
+                dataSource = new HikariDataSource();
                 dataSource.setJdbcUrl(workConf.getUrl());
-                dataSource.setUser(workConf.getUsername());
+                dataSource.setUsername(workConf.getUsername());
                 dataSource.setPassword(workConf.getPassword());
 
-                // Optional Settings
-                dataSource.setMinPoolSize(10);
-                dataSource.setInitialPoolSize(10);
-                dataSource.setAcquireIncrement(10);
-                dataSource.setMaxPoolSize(workConf.getMaxConnections());
-                dataSource.setMaxStatements(workConf.getMaxConnections());
+                dataSource.setMaximumPoolSize(workConf.getMaxConnections());
+
+                dataSource.setMetricRegistry(Metrics.globalRegistry);
 
                 Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                     dataSource.close();
