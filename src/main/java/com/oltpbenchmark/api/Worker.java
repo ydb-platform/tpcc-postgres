@@ -448,19 +448,10 @@ public abstract class Worker<T extends BenchmarkModule> implements Runnable {
                         break;
                     }
                 } finally {
-                    if (this.configuration.getNewConnectionPerTxn() && this.conn != null) {
-                        try {
-                            LOG.debug("Worker {} closing connection", id);
-                            this.conn.close();
-                            this.conn = null;
-                            this.benchmark.returnConnection();
-                        } catch (SQLException e) {
-                            LOG.error("Worker {} connection couldn't be closed.", id, e);
-                            throw new RuntimeException("Failed to close connection", e);
-                        }
-                    }
-
                     long end = System.nanoTime();
+
+                    // note, that here we measure single execution without retries,
+                    // while caller measures full time including retries
 
                     EXECUTION_DURATION.tag("type", "any").register(Metrics.globalRegistry)
                             .record(Duration.ofNanos(end - start));
@@ -484,6 +475,18 @@ public abstract class Worker<T extends BenchmarkModule> implements Runnable {
             LOG.error("Worker {} Unexpected RuntimeException when executing '%s' on [%s]: %s",
                 id, transactionType, databaseType.name(), ex.toString(), ex);
             throw ex;
+        } finally {
+            if (this.configuration.getNewConnectionPerTxn() && this.conn != null) {
+                try {
+                    LOG.debug("Worker {} closing connection", id);
+                    this.conn.close();
+                    this.conn = null;
+                    this.benchmark.returnConnection();
+                } catch (SQLException e) {
+                    LOG.error("Worker {} connection couldn't be closed.", id, e);
+                    throw new RuntimeException("Failed to close connection", e);
+                }
+            }
         }
 
         return status;
