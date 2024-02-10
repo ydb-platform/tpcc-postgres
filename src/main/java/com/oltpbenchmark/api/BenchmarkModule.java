@@ -117,7 +117,7 @@ public abstract class BenchmarkModule {
         this.workConf = workConf;
         this.dialects = new StatementDialects(workConf);
 
-        if (dataSource == null) {
+        if (!workConf.getDisableConnectionPool() && dataSource == null) {
             try {
                 dataSource = new ComboPooledDataSource();
                 dataSource.setDriverClass("org.postgresql.Driver");
@@ -132,8 +132,6 @@ public abstract class BenchmarkModule {
                 dataSource.setMaxPoolSize(workConf.getMaxConnections());
                 dataSource.setMaxStatements(workConf.getMaxConnections());
 
-                connectionSemaphore.release(workConf.getMaxConnections());
-
                 Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                     dataSource.close();
                 }));
@@ -142,6 +140,7 @@ public abstract class BenchmarkModule {
                 throw new RuntimeException("Unable to initialize DataSource", e);
             }
         }
+        connectionSemaphore.release(workConf.getMaxConnections());
     }
 
     // --------------------------------------------------------------------------
@@ -152,7 +151,17 @@ public abstract class BenchmarkModule {
         long start = System.nanoTime();
         try {
             connectionSemaphore.acquire();
-            return dataSource.getConnection();
+            if (dataSource != null) {
+                return dataSource.getConnection();
+            }
+            if (StringUtils.isEmpty(workConf.getUsername())) {
+                return DriverManager.getConnection(workConf.getUrl());
+            } else {
+                return DriverManager.getConnection(
+                        workConf.getUrl(),
+                        workConf.getUsername(),
+                        workConf.getPassword());
+            }
         } catch (SQLException e) {
             connectionSemaphore.release();
             throw e;

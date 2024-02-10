@@ -58,6 +58,8 @@ public class WorkloadConfiguration {
      */
     private boolean newConnectionPerTxn = false;
 
+    private boolean disableConnectionPooling = false;
+
     public String getBenchmarkName() {
         return benchmarkName;
     }
@@ -145,6 +147,14 @@ public class WorkloadConfiguration {
      */
     public void setNewConnectionPerTxn(boolean newConnectionPerTxn) {
         this.newConnectionPerTxn = newConnectionPerTxn;
+    }
+
+    public boolean getDisableConnectionPool() {
+        return disableConnectionPooling;
+    }
+
+    public void setDisableConnectionPool(boolean disableConnectionPooling) {
+        this.disableConnectionPooling = disableConnectionPooling;
     }
 
     public void setPhase(int id, int time, int warmup, List<Double> weights, boolean timed, int active_terminals, Phase.Arrival arrival) {
