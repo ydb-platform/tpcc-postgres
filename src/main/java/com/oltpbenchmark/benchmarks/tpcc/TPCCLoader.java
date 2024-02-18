@@ -52,17 +52,19 @@ public class TPCCLoader extends Loader<TPCCBenchmark> {
 
         // ITEM
         // This will be invoked first and executed in a single thread.
-        threads.add(new LoaderThread(this.benchmark) {
-            @Override
-            public void load(Connection conn) {
-                loadItems(conn, TPCCConfig.configItemCount);
-            }
+        if (this.startFromId == 1) {
+            threads.add(new LoaderThread(this.benchmark) {
+                @Override
+                public void load(Connection conn) {
+                    loadItems(conn, TPCCConfig.configItemCount);
+                }
 
-            @Override
-            public void afterLoad() {
-                itemLatch.countDown();
-            }
-        });
+                @Override
+                public void afterLoad() {
+                    itemLatch.countDown();
+                }
+            });
+        }
 
         // WAREHOUSES
         // We use a separate thread per warehouse. Each thread will load
