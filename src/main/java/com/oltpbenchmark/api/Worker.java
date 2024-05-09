@@ -364,7 +364,7 @@ public abstract class Worker<T extends BenchmarkModule> implements Runnable {
             int retryCount = 0;
             int maxRetryCount = configuration.getMaxRetries();
 
-            while (retryCount < maxRetryCount && this.benchmarkState.isWorkingOrMeasuring()) {
+            while (retryCount <= maxRetryCount && this.benchmarkState.isWorkingOrMeasuring()) {
                 status = TransactionStatus.UNKNOWN;
 
                 if (this.conn == null) {
