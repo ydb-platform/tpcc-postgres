@@ -4,7 +4,7 @@ This is a fork of [BenchBase](https://github.com/cmu-db/benchbase) done to enhan
 1. Fixed some performance issues in the original benchbase to speed up the benchmark.
 2. To address issues with running high number of warehouses, we added support for virtual threads (requires Java >= 21).
 3. Significantly reduced the memory footprint of the benchmark.
-4. Added c3p0 as a connection pool for PostgreSQL
+4. Added Hikari as a connection pool for PostgreSQL.
 
 Please, note that this is for PostgreSQL only.
 
